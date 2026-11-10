@@ -43,6 +43,10 @@ public interface ICache<TKey, TValue>
     /// Thời gian sống kể từ lúc gọi. <see langword="null"/> → dùng <see cref="CacheOptions.DefaultTtl"/>.
     /// <see cref="Timeout.InfiniteTimeSpan"/> → không hết hạn. Giá trị âm (trừ vô cực) bị từ chối.
     /// </param>
+    /// <remarks>
+    /// <see cref="Timeout.InfiniteTimeSpan"/> đúng bằng <c>-1 ms</c>, nên nó là ngoại lệ duy nhất của quy tắc
+    /// "số âm bị từ chối": <c>-1 ms</c> nghĩa là vĩnh viễn, còn <c>-2 ms</c> trở xuống mới ném exception.
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">Khi <paramref name="ttl"/> là số âm hữu hạn.</exception>
     // CA1716: "Set" trùng keyword của VB.NET. Giữ tên này vì nó khớp quy ước của
     // Microsoft.Extensions.Caching.Memory.IMemoryCache.Set; đổi thành "Put" sẽ lệch hệ sinh thái.

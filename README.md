@@ -4,121 +4,140 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tests: 51 Passed](https://img.shields.io/badge/Tests-51%20Passed-brightgreen)](tests/CacheMini.Tests)
 
+A lightweight, high-performance in-memory cache library for .NET 10: thread-safe, absolute TTL, single-flight factory execution, and two-tier cleanup.
 
-Cache in-memory mini cho .NET 10: thread-safe, TTL tuyệt đối, single-flight, dọn dẹp hai lớp.
+---
 
-## Vì sao có repo này
+## Why CacheMini?
 
-Một cache tự viết thường chết ở ba chỗ: đọc phải dữ liệu đã hết hạn, sweeper xoá nhầm giá trị vừa được ghi lại,
-và nhiều luồng cùng gọi factory khi miss. CacheMini xử lý cả ba, và bộ test chứng minh bằng đồng hồ giả
-chứ không bằng `Thread.Sleep`.
+Ad-hoc in-memory caches commonly fail in three critical concurrency scenarios:
+1. **Returning expired data** under race conditions.
+2. **Sweeper deleting newly written values** due to naive `TryRemove(key)` calls.
+3. **Cache stampedes (dogpiling):** multiple concurrent threads invoking the expensive factory simultaneously on cache misses.
 
-## Cấu trúc
+CacheMini solves all three challenges. Moreover, its comprehensive test suite is verified using controlled time abstraction (`TimeProvider`) without relying on brittle `Thread.Sleep` or `Task.Delay`.
+
+---
+
+## Project Structure
 
 ```
 CacheMini.slnx
-src/CacheMini/                 thư viện (net10.0)
-  ICache.cs                    hợp đồng
-  CacheEntry.cs                bản ghi bất biến (value + hạn)
-  CacheOptions.cs              DefaultTtl, SweepInterval
-  CacheStatistics.cs           Hits / Misses / Expirations
-  MiniCache.cs                 hiện thực
-tests/CacheMini.Tests/         xUnit
-  FakeTimeProvider.cs          đồng hồ điều khiển được, không cần package ngoài
-  CacheBasicsTests.cs
-  TtlTests.cs
-  GetOrCreateTests.cs
-  ConcurrencyTests.cs
+src/CacheMini/                 Core Library (.NET 10)
+  ICache.cs                    Public contract & interface
+  CacheEntry.cs                Immutable record (Value + Expiration)
+  CacheOptions.cs              DefaultTtl, SweepInterval configurations
+  CacheStatistics.cs           Thread-safe telemetry (Hits / Misses / Expirations)
+  MiniCache.cs                 Core implementation
+tests/CacheMini.Tests/         Test Suite (xUnit)
+  FakeTimeProvider.cs          Deterministic, zero-dependency fake clock
+  CacheBasicsTests.cs          CRUD semantics & API verification
+  TtlTests.cs                  Boundary & precision tick tests
+  GetOrCreateTests.cs          Single-flight factory execution tests
+  ConcurrencyTests.cs          High-load race condition stress tests (10k ops)
 ```
 
-## Dùng
+---
+
+## Quick Start
 
 ```csharp
 using CacheMini;
 
+// Initialize cache with options
 await using var cache = new MiniCache<string, UserProfile>(new CacheOptions
 {
     DefaultTtl = TimeSpan.FromMinutes(5),
-    SweepInterval = TimeSpan.FromMinutes(1), // null = không chạy sweeper nền
+    SweepInterval = TimeSpan.FromMinutes(1), // Set null to disable background sweeper
 });
 
-cache.Set("user:42", profile);                       // TTL mặc định
-cache.Set("user:43", other, TimeSpan.FromSeconds(30));
+// Set items with default or custom TTL
+cache.Set("user:42", profile);
+cache.Set("user:43", otherProfile, TimeSpan.FromSeconds(30));
 
+// Try retrieve item
 if (cache.TryGet("user:42", out var cached) && cached is not null)
+{
     Console.WriteLine(cached.Name);
+}
 
-// Single-flight: 1000 luồng cùng key => factory chỉ chạy 1 lần
-var loaded = cache.GetOrCreate("user:42", key => LoadFromDb(key));
+// Single-flight: 1,000 concurrent threads requesting the same key => factory executes exactly once
+var loaded = cache.GetOrCreate("user:42", key => LoadFromDatabase(key));
 
-Console.WriteLine(cache.Statistics.HitRatio);
+// Access cache telemetry
+Console.WriteLine($"Hit Ratio: {cache.Statistics.HitRatio:P2}");
 ```
 
-Không truyền `TimeProvider` thì dùng `TimeProvider.System`. Trong test, truyền đồng hồ giả để điều khiển
-thời điểm hết hạn mà không phải chờ.
+> **Note:** If no `TimeProvider` is passed, `TimeProvider.System` is used by default. In unit tests, inject a fake clock to control expiration deterministically without waiting.
 
-## Quy ước ngữ nghĩa
+---
 
-| Tình huống | Ý nghĩa |
+## Semantic Rules
+
+| Scenario | Behavior |
 |---|---|
-| `ttl = null` | Dùng `CacheOptions.DefaultTtl`; nếu cả hai null thì sống vĩnh viễn |
-| `TimeSpan.Zero` | Hết hạn ngay: biên là `now >= expiresAt` |
-| `Timeout.InfiniteTimeSpan` | Không bao giờ hết hạn |
-| `-1 ms` | Chính là `Timeout.InfiniteTimeSpan` → vĩnh viễn, **không** bị coi là TTL âm |
-| ttl âm hữu hạn (`-2 ms` trở xuống) | `ArgumentOutOfRangeException` |
-| Đọc entry đã hết hạn | Tính là miss, xoá luôn, tăng `Expirations` |
-| `Remove` | Không tính vào `Expirations` |
-| `Clear` | Xoá toàn bộ và reset bộ đếm thống kê |
-| `SweepInterval` > ~49.7 ngày | Kẹp xuống 49.7 ngày (`uint.MaxValue-1 ms`, giới hạn của `System.Threading.Timer`) |
+| `ttl = null` | Uses `CacheOptions.DefaultTtl`; if both are null, entry lives indefinitely |
+| `TimeSpan.Zero` | Expires immediately: boundary is `now >= expiresAt` |
+| `Timeout.InfiniteTimeSpan` | Never expires |
+| `-1 ms` | Alias for `Timeout.InfiniteTimeSpan` → indefinite lifetime (**not** treated as negative TTL) |
+| Finite negative TTL (`<= -2 ms`) | Throws `ArgumentOutOfRangeException` |
+| Reading expired entry | Evaluated as cache miss, evicted immediately, increments `Expirations` |
+| `Remove(key)` | Removes entry without incrementing `Expirations` |
+| `Clear()` | Purges all entries and resets telemetry counters |
+| `SweepInterval > ~49.7 days` | Clamped to 49.7 days (`uint.MaxValue - 1 ms`, limitation of `System.Threading.Timer`) |
 
-## Năm quyết định thiết kế
+---
 
-1. **Entry bất biến + `ConcurrentDictionary`** — mỗi lần ghi tạo instance mới, nên không ai đọc được trạng thái nửa vời.
-2. **Dọn dẹp hai lớp** — kiểm tra hạn lúc đọc bảo đảm tính đúng; sweeper nền chỉ để giải phóng bộ nhớ.
-3. **Xoá bằng `TryRemove(KeyValuePair)`** — chứ không phải `TryRemove(key)`. Nếu dùng `TryRemove(key)`, sweeper
-   có thể xoá mất giá trị *mới* vừa được `Set` trong khe thời gian giữa lúc kiểm tra hạn và lúc xoá.
-4. **`TimeProvider` thay cho `DateTimeOffset.UtcNow`** — test điều khiển được thời gian, không flaky.
-5. **Single-flight bằng `ConcurrentDictionary<TKey, Lazy<TValue>>`**, gỡ cổng trong `finally`; exception của factory
-   không được cache nên lần gọi sau vẫn thử lại được.
+## 5 Core Design Decisions
 
-## Kiểm thử
+1. **Immutable Entries + `ConcurrentDictionary`:** Each write creates a new immutable instance, ensuring no reader ever observes a half-initialized or corrupted state.
+2. **Two-Tier Eviction:** Lazy evaluation on read guarantees correctness; background sweeper periodically reclaims memory for unread expired entries.
+3. **Atomic Removal via `TryRemove(KeyValuePair)`:** Avoids `TryRemove(key)`. If `TryRemove(key)` were used, a background sweep could mistakenly delete a *new* value set right after the expiration check.
+4. **Deterministic `TimeProvider` Abstraction:** Fully replaces `DateTimeOffset.UtcNow`, enabling deterministic, zero-flakiness unit testing without real-world wall-clock delays.
+5. **Single-Flight via `ConcurrentDictionary<TKey, Lazy<TValue>>`:** Concurrent callers for the same key share a single execution gate, unlocked in `finally`. Factory exceptions are not cached, allowing subsequent calls to retry cleanly.
 
-51 test, phủ 5 nhóm: ngữ nghĩa cơ bản, TTL (biên chính xác theo tick), `GetOrCreate` single-flight,
-đồng thời (10k thao tác, sweeper vs writer, `Clear` chen giữa), thống kê. Toàn bộ dùng đồng hồ giả —
-không `Thread.Sleep`, không `Task.Delay`, nên không flaky.
+---
 
-```powershell
-# Cách chạy trong workspace này (xem ghi chú bên dưới):
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tests.ps1
+## Testing & Quality Assurance
 
-# Trên máy không bị sandbox chặn (CI, terminal thường):
+51 unit tests covering 5 test categories: basic semantics, exact tick-boundary TTL, single-flight `GetOrCreate`, high concurrency (10,000 operations, sweeper vs. writer races, concurrent `Clear`), and telemetry statistics.
+
+```bash
+# Run tests directly
 dotnet test CacheMini.slnx
+
+# Run via companion PowerShell runner (for restricted/sandbox environments)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 
-### Ghi chú vận hành: vì sao có `scripts/run-tests.ps1`
+### Verification Highlights
 
-Trong một số môi trường sandbox gắn ACL/integrity label, `testhost.exe` nằm trong `tests/**/bin`
-chết ngay khi khởi động với `0xC0000142` (STATUS_DLL_INIT_FAILED) — cùng file đó copy sang `%TEMP%`
-thì chạy bình thường, và một project xunit dựng mới trong `%TEMP%` cũng xanh. Đây là vấn đề vị trí
-thư mục, không phải code hay cấu hình project. Script build binary test ra `%TEMP%` rồi chạy `vstest`
-từ đó, cho kết quả y hệt `dotnet test`.
-
-### Nghiệm thu
-
-| Tiêu chí | Kết quả |
+| Criterion | Result |
 |---|---|
-| Build `-warnaserror` | 0 warning, 0 error |
-| Test | 51/51 xanh, 3 lượt liên tiếp, 3.7–5.5s/lượt |
-| Không `Thread.Sleep` trong test | ✅ |
-| `TryGet` không trả entry hết hạn | ✅ test biên `-1/0/+1` tick |
-| `GetOrCreate` 1000 caller cùng key → factory 1 lần | ✅ |
-| `DisposeAsync` 2 lần không ném | ✅ |
-| Xoá do hết hạn dùng `TryRemove(KeyValuePair)` | ✅ có test tái hiện kịch bản xoá nhầm |
+| Build with `-warnaserror` | 0 warnings, 0 errors |
+| Test Coverage | 51/51 passed across consecutive test passes |
+| `Thread.Sleep` in tests | 0 occurrences (100% deterministic) |
+| `TryGet` expired entries | Verified: zero leakage at `-1 / 0 / +1` tick boundaries |
+| Single-Flight Verification | Verified: 1,000 concurrent callers invoke factory exactly once |
+| `DisposeAsync` Idempotency | Verified: multiple dispose invocations do not throw |
+| Race-Condition Eviction | Verified: `TryRemove(KeyValuePair)` eliminates false evictions |
 
-Build bật `TreatWarningsAsErrors` + `GenerateDocumentationFile`: thêm thành viên public mà quên XML doc
-là build đỏ ngay, không phải phát hiện muộn lúc review.
+> **Compiler Strictness:** `TreatWarningsAsErrors` and `GenerateDocumentationFile` are enabled across all projects. Any missing XML documentation on public members will trigger a build error immediately.
 
+---
 
-## Ngoài phạm vi (cố ý)
+## Intentional Out of Scope
 
-Async factory, sliding expiration, giới hạn dung lượng/LRU, persistence, distributed cache, metrics export, AOT.
+To remain ultra-compact, modular, and zero-dependency, the following features are intentionally out of scope:
+- Async factory delegates
+- Sliding window expiration
+- Capacity bounding / LRU eviction policy
+- Persistence & distributed caching
+- OpenTelemetry / external metrics export
+- Native AOT trimming annotations
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

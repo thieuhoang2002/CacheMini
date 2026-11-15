@@ -1,7 +1,7 @@
 # Chạy toàn bộ unit test của CacheMini.
 #
 # Vì sao không dùng thẳng `dotnet test`?
-# Trong workspace này (do sandbox của DSH gắn nhãn integrity/ACL lên thư mục), tiến trình
+# Trong workspace này (do môi trường sandbox gắn nhãn integrity/ACL lên thư mục), tiến trình
 # `testhost.exe` nằm trong `tests/**/bin` chết ngay khi khởi động với mã 0xC0000142
 # (STATUS_DLL_INIT_FAILED). Cùng file đó copy sang %TEMP% thì chạy bình thường, nên đây là
 # vấn đề vị trí thư mục chứ không phải code. Script này build binary test ra %TEMP% rồi chạy

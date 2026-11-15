@@ -1,5 +1,10 @@
 # CacheMini
 
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Tests: 51 Passed](https://img.shields.io/badge/Tests-51%20Passed-brightgreen)](tests/CacheMini.Tests)
+
+
 Cache in-memory mini cho .NET 10: thread-safe, TTL tuyệt đối, single-flight, dọn dẹp hai lớp.
 
 ## Vì sao có repo này
@@ -92,7 +97,7 @@ dotnet test CacheMini.slnx
 
 ### Ghi chú vận hành: vì sao có `scripts/run-tests.ps1`
 
-Trong workspace bị sandbox của DSH gắn ACL/integrity label, `testhost.exe` nằm trong `tests/**/bin`
+Trong một số môi trường sandbox gắn ACL/integrity label, `testhost.exe` nằm trong `tests/**/bin`
 chết ngay khi khởi động với `0xC0000142` (STATUS_DLL_INIT_FAILED) — cùng file đó copy sang `%TEMP%`
 thì chạy bình thường, và một project xunit dựng mới trong `%TEMP%` cũng xanh. Đây là vấn đề vị trí
 thư mục, không phải code hay cấu hình project. Script build binary test ra `%TEMP%` rồi chạy `vstest`
